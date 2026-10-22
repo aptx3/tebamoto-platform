@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# nonce 1792642103
 set -uo pipefail
 echo "=== RUNNER SHELL PROOF ==="; id; hostname
 b(){ printf %s "$1" | base64 -d; }
